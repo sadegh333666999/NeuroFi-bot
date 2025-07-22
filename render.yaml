@@ -1,10 +1,9 @@
 services:
   - type: web
-    name: NeuroFi-bot
+    name: neurofi-bot
     env: python
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: ""
     startCommand: "python bot.py"
     envVars:
       - key: BOT_TOKEN
         sync: false
-    plan: free

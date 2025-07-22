@@ -3,12 +3,17 @@ import os
 import json
 import random
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
+    ContextTypes, filters
+)
 from telegram.error import BadRequest
 
-# ---------------- تنظیمات اولیه ----------------
+# ---------------- تنظیمات ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATA_FILE = "referrals.json"
+ADMIN_USERNAME = "@NeuroFi_Persian"
+
 REQUIRED_CHANNELS = [
     "@NeuroFi_Channel",
     "@Neuro_Fi",
@@ -30,7 +35,7 @@ REWARD_LIST = [
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------- مدیریت فایل داده ----------------
+# ---------------- مدیریت فایل ----------------
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {}
@@ -41,11 +46,11 @@ def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
-# ---------------- بررسی عضویت کاربر ----------------
+# ---------------- بررسی عضویت در کانال‌ها ----------------
 async def is_user_member(user_id, context):
     for channel in REQUIRED_CHANNELS:
         try:
-            member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
+            member = await context.bot.get_chat_member(channel, user_id)
             if member.status in ['left', 'kicked']:
                 return False
         except BadRequest:
@@ -62,42 +67,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data[uid] = {"invited": [], "wallet": "", "spin_count": 0}
         save_data(data)
 
-    # ثبت دعوتی
     if context.args:
         inviter_id = context.args[0]
         if inviter_id != uid and uid not in data.get(inviter_id, {}).get("invited", []):
             data[inviter_id]["invited"].append(uid)
             save_data(data)
 
-    # چک عضویت
-    member = await is_user_member(user.id, context)
-    if not member:
-        text = (
-            "❌ برای شروع، ابتدا در کانال‌های زیر عضو شوید:\n\n" +
-            "\n".join([f"🔹 {ch}" for ch in REQUIRED_CHANNELS]) +
-            "\n\nسپس دستور /start را دوباره ارسال کنید."
+    if not await is_user_member(user.id, context):
+        channels = "\n".join([f"🔹 {ch}" for ch in REQUIRED_CHANNELS])
+        await update.message.reply_text(
+            f"❌ ابتدا در کانال‌های زیر عضو شوید:\n\n{channels}\n\nسپس /start را دوباره بزنید."
         )
-        await update.message.reply_text(text)
         return
 
-    # ارسال خوش‌آمد و لینک دعوت
     referral_link = f"https://t.me/{context.bot.username}?start={uid}"
-    text = (
-        "🧠 به دنیای NeuroFi خوش آمدید!\n\n"
-        "📡 رسانه‌ی هوشمند اقتصاد نوین\n"
-        "📊 تحلیل بازار | 🎯 سیگنال حرفه‌ای\n"
-        "🎥 آموزش | 💸 انتقال ارز | 🎶 موزیک و آرامش\n\n"
+    welcome_text = (
+        "🧠 به دنیای NeuroFi خوش آمدید!\n"
+        "📊 آموزش | سیگنال | موزیک ترید | خدمات مالی\n"
         "✨ در دنیای ما، جاذبه به سمت بالاست...\n\n"
-        "📨 لینک دعوت اختصاصی شما:\n"
+        "📨 لینک اختصاصی شما:\n"
         f"{referral_link}\n\n"
-        "✅ برای استفاده از گردونه، روی دکمه زیر بزنید:"
+        "🎰 برای شرکت در گردونه، دکمه زیر را بزنید:"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎰 استفاده از گردونه", callback_data="spin")]
     ])
-    await update.message.reply_text(text, reply_markup=keyboard)
+    await update.message.reply_text(welcome_text, reply_markup=keyboard)
 
-# ---------------- هندل گردونه ----------------
+# ---------------- گردونه ----------------
 async def spin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -106,22 +103,21 @@ async def spin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
 
     if uid not in data:
-        await query.edit_message_text("❌ ابتدا باید /start را ارسال کنید.")
+        await query.edit_message_text("❌ ابتدا /start را بزنید.")
         return
 
     if not await is_user_member(user.id, context):
-        await query.edit_message_text("❌ هنوز در همه‌ی کانال‌ها عضو نیستید. لطفاً عضو شوید و /start بزنید.")
+        await query.edit_message_text("❌ هنوز در کانال‌ها عضو نیستید.")
         return
 
-    invited_count = len(data[uid]["invited"])
+    invited = len(data[uid]["invited"])
     spin_count = data[uid].get("spin_count", 0)
 
-    # بررسی شرط استفاده
     if spin_count == 0:
         allowed = True
-    elif spin_count == 1 and invited_count >= 50:
+    elif spin_count == 1 and invited >= 50:
         allowed = True
-    elif spin_count >= 2 and invited_count >= (50 + 100 * (spin_count - 1)):
+    elif spin_count >= 2 and invited >= (50 + (spin_count - 1) * 100):
         allowed = True
     else:
         allowed = False
@@ -129,16 +125,23 @@ async def spin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if allowed:
         prize = random.choice(REWARD_LIST)
         data[uid]["spin_count"] += 1
+        data[uid]["last_prize"] = prize
         save_data(data)
+
         await query.edit_message_text(
-            f"🎉 تبریک! شما برنده شدید:\n{prize}\n\n📥 حالا آدرس کیف پول خود را به صورت زیر ارسال کنید:\n`wallet: YOUR_ADDRESS`",
+            f"🎉 تبریک! شما برنده شدید:\n{prize}\n\n"
+            "📥 حالا آدرس کیف پول خود را به صورت زیر ارسال کنید:\n"
+            "`wallet: YOUR_ADDRESS (شبکه)`",
             parse_mode="Markdown"
         )
     else:
-        needed = 50 if spin_count == 1 else (50 + 100 * (spin_count - 1))
-        await query.edit_message_text(f"❌ برای استفاده از گردونه، باید حداقل {needed} نفر را دعوت کنید.\n📨 از لینک رفرال خود استفاده کنید.")
+        needed = 50 if spin_count == 1 else 50 + 100 * (spin_count - 1)
+        await query.edit_message_text(
+            f"❌ برای استفاده‌ی بعدی از گردونه باید حداقل {needed} نفر را دعوت کنید.\n"
+            "📨 لینک دعوت خود را از /start بگیرید و به دوستانتان بدهید."
+        )
 
-# ---------------- آدرس کیف پول ----------------
+# ---------------- ثبت کیف پول ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = str(user.id)
@@ -146,15 +149,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
 
     if text.startswith("wallet:"):
-        address = text.replace("wallet:", "").strip()
+        wallet = text.replace("wallet:", "").strip()
+
         if uid in data:
-            data[uid]["wallet"] = address
+            data[uid]["wallet"] = wallet
             save_data(data)
-            await update.message.reply_text("✅ آدرس کیف پول شما ذخیره شد.")
+
+            await update.message.reply_text(
+                "✅ آدرس کیف پول شما ذخیره شد.\n"
+                "🧾 لطفاً مطمئن شوید شبکه و نوع ارز صحیح انتخاب شده باشد.\n"
+                "🎯 مثال: wallet: TRX_TQ7r..."
+            )
+
+            prize = data[uid].get("last_prize", "❓ مشخص نشده")
+            admin_text = (
+                f"🎉 کاربر جدید جایزه گرفت!\n"
+                f"👤 نام: {user.first_name} (@{user.username})\n"
+                f"🆔 آیدی عددی: {uid}\n"
+                f"🎁 جایزه: {prize}\n"
+                f"💼 آدرس کیف پول: {wallet}"
+            )
+            await context.bot.send_message(chat_id=ADMIN_USERNAME, text=admin_text)
         else:
-            await update.message.reply_text("❌ ابتدا /start را ارسال کنید.")
+            await update.message.reply_text("❌ ابتدا /start را بزنید.")
     else:
-        await update.message.reply_text("📩 لطفاً آدرس کیف پول را با فرمت زیر بفرستید:\n`wallet: YOUR_ADDRESS`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "📩 لطفاً آدرس کیف پول را با فرمت زیر ارسال کنید:\n"
+            "`wallet: NETWORK_ADDRESS`\n"
+            "مثال: `wallet: TRX_TQ7r...`",
+            parse_mode="Markdown"
+        )
 
 # ---------------- اجرا ----------------
 if __name__ == "__main__":
